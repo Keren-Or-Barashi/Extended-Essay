@@ -1,0 +1,229 @@
+
+<style>
+  body { font-family: inherit; }
+  .ctrl { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .ctrl label { font-size: 13px; color: var(--color-text-secondary); width: 46px; flex-shrink: 0; }
+  .ctrl input[type=range] { flex: 1; }
+  .ctrl .val { font-size: 13px; font-weight: 600; min-width: 50px; text-align: right; }
+  .badge { font-size: 12px; padding: 4px 10px; border-radius: 20px; font-weight: 500; display: inline-block; }
+  .badge-pos  { background: #EAF3DE; color: #3B6D11; }
+  .badge-mix  { background: #FAEEDA; color: #854F0B; }
+  .badge-tang { background: #E6F1FB; color: #185FA5; }
+  .badge-neu  { background: var(--color-background-secondary); color: var(--color-text-secondary); }
+  .info-row  { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+  .roots-row { display: flex; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; align-items: center;
+               font-size: 12px; color: var(--color-text-secondary); min-height: 22px; }
+  @media (prefers-color-scheme: dark) {
+    .badge-pos  { background: #27500A; color: #C0DD97; }
+    .badge-mix  { background: #633806; color: #FAC775; }
+    .badge-tang { background: #0C447C; color: #B5D4F4; }
+  }
+</style>
+
+<div style="padding: 1rem 0;">
+
+  <div class="ctrl">
+    <label>ρ</label>
+    <input type="range" id="rho"  min="1.01" max="12" step="0.01" value="2">
+    <span class="val" id="rho-val">2.00</span>
+  </div>
+  <div class="ctrl">
+    <label>r&#x0305;</label>
+    <input type="range" id="rbar" min="0.1"  max="5"  step="0.05" value="1">
+    <span class="val" id="rbar-val">1.00</span>
+  </div>
+
+  <!-- thresholds + case label -->
+  <div class="info-row" id="info-row"></div>
+  <!-- root values -->
+  <div class="roots-row" id="roots-row"></div>
+
+  <div style="position:relative; width:100%; height:340px;">
+    <canvas id="chart"></canvas>
+  </div>
+
+  <!-- legend -->
+  <div style="margin-top:10px; display:flex; gap:20px; font-size:12px;
+              color:var(--color-text-secondary); flex-wrap:wrap; align-items:center;">
+    <span style="display:flex;align-items:center;gap:5px;">
+      <span style="display:inline-block;width:20px;height:3px;background:#1D9E75;border-radius:2px;"></span>
+      d(x) ≥ 0
+    </span>
+    <span style="display:flex;align-items:center;gap:5px;">
+      <span style="display:inline-block;width:20px;height:0px;border-top:2.5px dashed #E24B4A;"></span>
+      d(x) &lt; 0
+    </span>
+    <span style="margin-left:4px;">
+      d(x) = 1/(1+x) − 1 + (ρ−1)/(r&#x0305;−x) &nbsp;·&nbsp;
+      ρ± = (3+r&#x0305;) ± 2√(r&#x0305;+1) &nbsp;·&nbsp;
+      domain x ∈ [0, r&#x0305;)
+    </span>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+// ── helpers ──────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function dFn(x, rho, rbar) {
+  return 1/(1+x) - 1 + (rho-1)/(rbar-x);
+}
+
+function thresholds(rbar) {
+  const sq = 2*Math.sqrt(rbar+1);
+  return { rm: 3+rbar-sq, rp: 3+rbar+sq };
+}
+
+function discriminant(rho, rbar) {
+  const b = rho-(1+rbar);
+  return b*b - 4*(rho-1);
+}
+
+function getRoots(rho, rbar) {
+  const disc = discriminant(rho, rbar);
+  if (disc < 0) return { disc, xm: null, xp: null };
+  const sq  = Math.sqrt(Math.max(0, disc));
+  const mid = (1+rbar-rho)/2;
+  return { disc, xm: mid - sq/2, xp: mid + sq/2 };
+}
+
+const EPS = 1e-9;
+function inDomain(v, rbar) { return v > -EPS && v < rbar - EPS; }
+
+// ── classify ─────────────────────────────────────────────────────────────────
+function classify(rho, rbar) {
+  const { rm, rp } = thresholds(rbar);
+  const tol = 0.015; // slider snap ≈ 0.01, so 1.5× is enough
+
+  if (Math.abs(rho - rm) < tol) {
+    return { case: 'tang', label: 'ρ ≈ ρ⁻ — tangency x* inside domain, d(x) ≥ 0 everywhere', cls: 'badge-tang' };
+  }
+  if (rho < rm - tol) {
+    return { case: 'tails', label: '1 < ρ < ρ⁻ — d(x) ≥ 0 only on two tails [0,x⁻] ∪ [x⁺, r̄)', cls: 'badge-mix' };
+  }
+  if (rho < rp - tol) {
+    return { case: 'all', label: 'ρ⁻ < ρ < ρ⁺ — Δ < 0, d(x) > 0 everywhere', cls: 'badge-pos' };
+  }
+  if (Math.abs(rho - rp) < tol) {
+    return { case: 'all', label: 'ρ ≈ ρ⁺ — tangency outside domain, d(x) > 0 everywhere', cls: 'badge-pos' };
+  }
+  return { case: 'all', label: 'ρ > ρ⁺ — roots outside domain, d(x) > 0 everywhere', cls: 'badge-pos' };
+}
+
+// ── info panel ───────────────────────────────────────────────────────────────
+function buildInfo(rho, rbar) {
+  const { rm, rp } = thresholds(rbar);
+  const info = classify(rho, rbar);
+
+  $('info-row').innerHTML =
+    `<span class="badge ${info.cls}">${info.label}</span>` +
+    `<span class="badge badge-neu">ρ⁻ = ${rm.toFixed(4)}</span>` +
+    `<span class="badge badge-neu">ρ⁺ = ${rp.toFixed(4)}</span>`;
+
+  const disc = discriminant(rho, rbar);
+  let rHtml = '';
+
+  if (disc < 0) {
+    rHtml = '<span>Δ &lt; 0 — no real roots</span>';
+  } else if (Math.abs(disc) < 1e-4) {
+    // tangency
+    const xstar = Math.sqrt(rbar+1) - 1;
+    rHtml = `<span>x* = ${xstar.toFixed(5)}&ensp;<span style="color:#185FA5">✓ inside [0, r̄)</span></span>`;
+  } else {
+    const { xm, xp } = getRoots(rho, rbar);
+    const col = v => inDomain(v, rbar) ? '#1D9E75' : '#888';
+    const lbl = v => inDomain(v, rbar) ? '✓ inside [0, r̄)' : 'outside domain';
+    rHtml =
+      `<span>x⁻ = ${xm.toFixed(5)}&ensp;<span style="color:${col(xm)}">${lbl(xm)}</span></span>` +
+      `<span>x⁺ = ${xp.toFixed(5)}&ensp;<span style="color:${col(xp)}">${lbl(xp)}</span></span>`;
+  }
+  $('roots-row').innerHTML = rHtml;
+}
+
+// ── chart ────────────────────────────────────────────────────────────────────
+let chart;
+
+function buildChart(rho, rbar) {
+  const YMAX = 20, YMIN = -4;
+  const N = 800, epsL = 0, epsR = 0.002;   // domain starts at 0
+
+  // collect breakpoints (roots inside domain)
+  const { disc, xm, xp } = getRoots(rho, rbar);
+  const breaks = [];
+  if (disc > 1e-6) {
+    if (inDomain(xm, rbar)) breaks.push(xm);
+    if (inDomain(xp, rbar)) breaks.push(xp);
+  }
+
+  // sample x values
+  const xs = [];
+  for (let i = 0; i <= N; i++) xs.push(epsL + (rbar - epsL - epsR) * i / N);
+  breaks.forEach(b => { xs.push(b - 3e-4); xs.push(b + 3e-4); });
+  xs.sort((a,b) => a-b);
+
+  const posData = [], negData = [];
+  xs.forEach(x => {
+    const v = dFn(x, rho, rbar);
+    if (!isFinite(v)) return;
+    if (v >= 0) { posData.push({x, y: Math.min(v, YMAX)}); negData.push({x, y: null}); }
+    else         { negData.push({x, y: Math.max(v, YMIN)}); posData.push({x, y: null}); }
+  });
+
+  const dark = matchMedia('(prefers-color-scheme:dark)').matches;
+  const gc   = dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.07)';
+  const tc   = dark ? '#aaa' : '#555';
+  const zc   = dark ? 'rgba(255,255,255,.20)' : 'rgba(0,0,0,.15)';
+
+  const datasets = [
+    { label: 'd≥0', data: posData, borderColor: '#1D9E75', borderWidth: 2.5,
+      backgroundColor: 'transparent', pointRadius: 0, spanGaps: false, tension: 0 },
+    { label: 'd<0',  data: negData, borderColor: '#E24B4A', borderWidth: 2.5,
+      backgroundColor: 'transparent', pointRadius: 0, spanGaps: false, tension: 0,
+      borderDash: [5,3] },
+    { label: 'zero', data: [{x:0,y:0},{x:rbar-epsR,y:0}],
+      borderColor: zc, borderWidth: 1, pointRadius: 0, borderDash: [3,4], spanGaps: true }
+  ];
+
+  if (!chart) {
+    chart = new Chart($('chart'), {
+      type: 'line', data: { datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
+        scales: {
+          x: { type:'linear', min:0, max:rbar,
+               title:{display:true,text:'x',color:tc,font:{size:13}},
+               ticks:{color:tc,maxTicksLimit:10,callback:v=>v.toFixed(2)},
+               grid:{color:gc} },
+          y: { min:YMIN, max:YMAX,
+               title:{display:true,text:'d(x)',color:tc,font:{size:13}},
+               ticks:{color:tc,maxTicksLimit:10,callback:v=>v.toFixed(1)},
+               grid:{color:gc} }
+        },
+        plugins: {
+          legend: { display:false },
+          tooltip: { callbacks:{ label: ctx=>`d(x) = ${ctx.parsed.y.toFixed(5)}` } }
+        }
+      }
+    });
+  } else {
+    chart.data.datasets = datasets;
+    chart.options.scales.x.max = rbar;
+    chart.update('none');
+  }
+}
+
+// ── main loop ─────────────────────────────────────────────────────────────────
+function update() {
+  const rho  = parseFloat($('rho').value);
+  const rbar = parseFloat($('rbar').value);
+  $('rho-val').textContent  = rho.toFixed(2);
+  $('rbar-val').textContent = rbar.toFixed(2);
+  buildInfo(rho, rbar);
+  buildChart(rho, rbar);
+}
+
+$('rho') .addEventListener('input', update);
+$('rbar').addEventListener('input', update);
+update();
+</script>
